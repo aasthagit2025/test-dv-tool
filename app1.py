@@ -78,7 +78,7 @@ if data_file and rules_file:
 
 
 
-            elif rtype == "skip_check":
+            elif check_type == "skip_check":
                 cond_var, cond_val = param.split('=')
                 cond_val = float(cond_val)
                 if row[cond_var] == cond_val:
@@ -86,7 +86,7 @@ if data_file and rules_file:
                         if pd.notna(row[v]):
                             row_errors.append(f"{v}: {message} (found {row[v]})")
 
-            elif rtype == "consistency_check":
+            elif check_type == "consistency_check":
                 cond_var, cond_val = param.split('=')
                 cond_val = float(cond_val)
                 for v in variables:
