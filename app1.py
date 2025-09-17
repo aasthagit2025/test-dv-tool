@@ -76,13 +76,19 @@ if data_file and rules_file:
             except:
                 report.append({"RespondentID": None, "Question": q, "Check_Type": "Range", "Issue": "Invalid range condition"})
 
-            elif check_type == "skip_check":
-                cond_var, cond_val = param.split('=')
-                cond_val = float(cond_val)
-                if row[cond_var] == cond_val:
-                    for v in variables:
-                        if pd.notna(row[v]):
-                            row_errors.append(f"{v}: {message} (found {row[v]})")
+        elif check_type == "Skip":
+            try:
+                cond_parts = condition.split("then")
+                if_part, then_part = cond_parts[0].strip(), cond_parts[1].strip()
+                if_q, if_val = if_part.replace("If", "").strip().split("=")
+                then_q = then_part.split()[0]
+                subset = df[df[if_q.strip()] == int(if_val.strip())]
+                offenders = subset.loc[subset[then_q].notna(), "RespondentID"]
+                for rid in offenders:
+                    report.append({"RespondentID": rid, "Question": q, "Check_Type": "Skip", "Issue": "Answered but should be blank"})
+            except:
+                report.append({"RespondentID": None, "Question": q, "Check_Type": "Skip", "Issue": "Invalid skip rule format"})
+
 
             elif check_type == "consistency_check":
                 cond_var, cond_val = param.split('=')
