@@ -76,13 +76,7 @@ if data_file and rules_file:
             except:
                 report.append({"RespondentID": None, "Question": q, "Check_Type": "Range", "Issue": "Invalid range condition"})
 
-            elif rtype == "range_exclude":
-                range_part, exclude_part = param.split(';')
-                min_val, max_val = map(float, range_part.split('-'))
-                exclude_vals = list(map(float, exclude_part.replace('exclude=','').split(',')))
-                for v in variables:
-                    if pd.notna(row[v]) and row[v] not in exclude_vals and not (min_val <= row[v] <= max_val):
-                        row_errors.append(f"{v}: {message} (found {row[v]})")
+
 
             elif rtype == "skip_check":
                 cond_var, cond_val = param.split('=')
