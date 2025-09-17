@@ -89,11 +89,6 @@ if data_file and rules_file:
             except:
                 report.append({"RespondentID": None, "Question": q, "Check_Type": "Skip", "Issue": "Invalid skip rule format"})
 
-elif check_type == "SkipRange":
-    # For Skip+Range → only 1 target var at a time
-    if target_vars:
-        results[q] = validate_range_with_skip(df, condition_var, condition_values, target_vars[0], valid_range)
-
 
         elif check_type == "Multi-Select":
             related_cols = [col for col in df.columns if col.startswith(q)]
