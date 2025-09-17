@@ -3,7 +3,7 @@ import pandas as pd
 import pyreadstat
 import io
 
-st.title("Survey Data Validation Tool")
+st.title("📊 Survey Data Validation Tool")
 
 # --- File Upload ---
 data_file = st.file_uploader("Upload your survey data file (CSV, Excel, or SPSS)", type=["csv", "xlsx", "sav"])
@@ -26,6 +26,8 @@ if data_file and rules_file:
 
     # --- Validation Report Logic ---
     report = []
+    skip_pass_ids = set()  # store respondents where skip was satisfied
+
     for _, rule in rules_df.iterrows():
         q = str(rule["Question"]).strip()
         check_types = [c.strip() for c in str(rule["Check_Type"]).split(";")]
@@ -34,11 +36,10 @@ if data_file and rules_file:
         for i, check_type in enumerate(check_types):
             condition = conditions[i] if i < len(conditions) else None
 
-            # --- Straightliner (multi-column support) ---
+            # --- Straightliner ---
             if check_type == "Straightliner":
                 related_cols = [col.strip() for col in q.split(",")]
                 related_cols = [col for col in related_cols if col in df.columns]
-
                 if len(related_cols) > 1:
                     straightliners = df[related_cols].nunique(axis=1)
                     offenders = df.loc[straightliners == 1, "RespondentID"]
@@ -56,9 +57,9 @@ if data_file and rules_file:
                         "Check_Type": "Straightliner",
                         "Issue": "Question(s) not found in dataset"
                     })
-                continue  # skip normal single-col logic
+                continue
 
-            # --- Normal Single-Column Checks ---
+            # --- Single-Column Checks ---
             if q not in df.columns:
                 report.append({
                     "RespondentID": None,
@@ -73,16 +74,18 @@ if data_file and rules_file:
                 if missing > 0:
                     offenders = df.loc[df[q].isna(), "RespondentID"]
                     for rid in offenders:
-                        report.append({"RespondentID": rid, "Question": q,
-                                       "Check_Type": "Missing", "Issue": "Value is missing"})
+                        # Only flag if not in skip_pass_ids
+                        if rid not in skip_pass_ids:
+                            report.append({"RespondentID": rid, "Question": q,
+                                           "Check_Type": "Missing", "Issue": "Value is missing"})
 
             elif check_type == "Range":
                 try:
-                    # Only handle conditions with dash (e.g. "1-99999")
                     if "-" not in str(condition):
                         raise ValueError("Not a valid range format")
                     min_val, max_val = map(float, condition.split("-"))
-                    offenders = df.loc[~df[q].between(min_val, max_val), "RespondentID"]
+                    mask = ~df[q].between(min_val, max_val)
+                    offenders = df.loc[mask & (~df["RespondentID"].isin(skip_pass_ids)), "RespondentID"]
                     for rid in offenders:
                         report.append({"RespondentID": rid, "Question": q,
                                        "Check_Type": "Range",
@@ -94,19 +97,26 @@ if data_file and rules_file:
 
             elif check_type == "Skip":
                 try:
-                    # Expect "If X=Y then Z should be blank"
                     if "then" not in str(condition):
                         raise ValueError("Not a valid skip format")
                     cond_parts = condition.split("then")
                     if_part, then_part = cond_parts[0].strip(), cond_parts[1].strip()
                     if_q, if_val = if_part.replace("If", "").strip().split("=")
                     then_q = then_part.split()[0]
+
                     subset = df[df[if_q.strip()] == int(if_val.strip())]
+
+                    # offenders → answered when should be blank
                     offenders = subset.loc[subset[then_q].notna(), "RespondentID"]
                     for rid in offenders:
                         report.append({"RespondentID": rid, "Question": q,
                                        "Check_Type": "Skip",
                                        "Issue": "Answered but should be blank"})
+
+                    # satisfied → correctly blank, exclude from Range/Missing
+                    satisfied = subset.loc[subset[then_q].isna(), "RespondentID"].tolist()
+                    skip_pass_ids = skip_pass_ids.union(set(satisfied))
+
                 except Exception:
                     report.append({"RespondentID": None, "Question": q,
                                    "Check_Type": "Skip",
@@ -142,13 +152,13 @@ if data_file and rules_file:
                                    "Check_Type": "Duplicate",
                                    "Issue": "Duplicate value found"})
 
-    # --- Create report ---
+    # --- Create Report ---
     report_df = pd.DataFrame(report)
 
     st.write("### Validation Report (detailed by Respondent)")
     st.dataframe(report_df)
 
-    # --- ✅ Download Report ---
+    # --- Download Report ---
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         report_df.to_excel(writer, index=False, sheet_name="Validation Report")
