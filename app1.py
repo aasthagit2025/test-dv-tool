@@ -76,8 +76,6 @@ if data_file and rules_file:
             except:
                 report.append({"RespondentID": None, "Question": q, "Check_Type": "Range", "Issue": "Invalid range condition"})
 
-
-
             elif check_type == "skip_check":
                 cond_var, cond_val = param.split('=')
                 cond_val = float(cond_val)
