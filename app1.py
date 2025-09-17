@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import pyreadstat
 import io
-import re
 
 st.title("Survey Data Validation Tool")
 
@@ -22,10 +21,6 @@ if data_file and rules_file:
         st.error("Unsupported file type")
         st.stop()
 
-    # Ensure RespondentID exists
-    if "RespondentID" not in df.columns:
-        df.insert(0, "RespondentID", range(1, len(df) + 1))
-
     # --- Load Rules ---
     rules_df = pd.read_excel(rules_file)
 
@@ -34,30 +29,53 @@ if data_file and rules_file:
     for _, rule in rules_df.iterrows():
         q = rule["Question"]
         check_type = rule["Check_Type"]
-        condition = str(rule.get("Condition", "")).strip()
+        condition = rule["Condition"]
 
-        if q not in df.columns and check_type not in ["Multi-Select", "Straightliner"]:
-            report.append({"RespondentID": "-", "Question": q, "Check_Type": check_type, "Issue": "Question not found"})
+        if check_type == "Straightliner":
+            # ✅ Handle multiple columns separated by commas
+            related_cols = [col.strip() for col in q.split(",")]
+            related_cols = [col for col in related_cols if col in df.columns]
+
+            if len(related_cols) > 1:
+                straightliners = df[related_cols].nunique(axis=1)
+                offenders = df.loc[straightliners == 1, "RespondentID"]
+                for rid in offenders:
+                    report.append({
+                        "RespondentID": rid,
+                        "Question": ",".join(related_cols),
+                        "Check_Type": "Straightliner",
+                        "Issue": "Same response across all items"
+                    })
+            else:
+                report.append({
+                    "RespondentID": None,
+                    "Question": q,
+                    "Check_Type": "Straightliner",
+                    "Issue": "Question(s) not found in dataset"
+                })
+            continue  # Skip normal "Question not found" check for Straightliner
+
+        # --- Normal Single-Column Checks ---
+        if q not in df.columns and check_type not in ["Skip", "SkipRange", "Straightliner", "Multi-Select"]:
+            report.append({"RespondentID": None, "Question": q, "Check_Type": check_type, "Issue": "Question not found in dataset"})
             continue
 
-        # 1. Missing (Required)
         if check_type == "Missing":
-            missing_ids = df[df[q].isna()]["RespondentID"].tolist()
-            for rid in missing_ids:
-                report.append({"RespondentID": rid, "Question": q, "Check_Type": "Missing", "Issue": "Missing value"})
+            missing = df[q].isna().sum()
+            if missing > 0:
+                offenders = df.loc[df[q].isna(), "RespondentID"]
+                for rid in offenders:
+                    report.append({"RespondentID": rid, "Question": q, "Check_Type": "Missing", "Issue": "Value is missing"})
 
-        # 2. Range
         elif check_type == "Range":
             try:
-                min_val, max_val = map(int, condition.split("-"))
-                invalid = df[~df[q].between(min_val, max_val)]
-                for rid in invalid["RespondentID"]:
-                    report.append({"RespondentID": rid, "Question": q, "Check_Type": "Range",
-                                   "Issue": f"Out of range (Allowed {min_val}-{max_val})"})
+                min_val, max_val = map(float, condition.split("-"))
+                offenders = df.loc[~df[q].between(min_val, max_val), "RespondentID"]
+                for rid in offenders:
+                    report.append({"RespondentID": rid, "Question": q, "Check_Type": "Range", "Issue": f"Value out of range ({min_val}-{max_val})"})
             except:
-                report.append({"RespondentID": "-", "Question": q, "Check_Type": "Range", "Issue": "Invalid range rule"})
+                report.append({"RespondentID": None, "Question": q, "Check_Type": "Range", "Issue": "Invalid range condition"})
 
-        # 3. Skip / Dependency
         elif check_type == "Skip":
             try:
                 cond_parts = condition.split("then")
@@ -65,69 +83,104 @@ if data_file and rules_file:
                 if_q, if_val = if_part.replace("If", "").strip().split("=")
                 then_q = then_part.split()[0]
                 subset = df[df[if_q.strip()] == int(if_val.strip())]
-                invalid = subset[subset[then_q].notna()]
-                for rid in invalid["RespondentID"]:
-                    report.append({"RespondentID": rid, "Question": q, "Check_Type": "Skip",
-                                   "Issue": f"Invalid skip logic (If {if_q}={if_val}, {then_q} should be blank)"})
-            except Exception as e:
-                report.append({"RespondentID": "-", "Question": q, "Check_Type": "Skip",
-                               "Issue": f"Invalid skip rule format ({e})"})
+                offenders = subset.loc[subset[then_q].notna(), "RespondentID"]
+                for rid in offenders:
+                    report.append({"RespondentID": rid, "Question": q, "Check_Type": "Skip", "Issue": "Answered but should be blank"})
+            except:
+                report.append({"RespondentID": None, "Question": q, "Check_Type": "Skip", "Issue": "Invalid skip rule format"})
 
-        # 4. Multi-Select
+        elif check_type == "SkipRange":
+            try:
+                # Format: If Q2=2 then Q3 1-99999
+                cond_parts = condition.split("then")
+                if_part, then_part = cond_parts[0].strip(), cond_parts[1].strip()
+
+                # Parse IF part
+                if_q, if_val = if_part.replace("If", "").strip().split("=")
+                if_q, if_val = if_q.strip(), int(if_val.strip())
+
+                # Parse THEN part
+                then_tokens = then_part.split()
+                then_q = then_tokens[0].strip()
+
+                # Extract valid range (e.g., "1-99999")
+                valid_range = None
+                if len(then_tokens) > 1:
+                    try:
+                        min_val, max_val = map(float, then_tokens[1].split("-"))
+                        valid_range = (min_val, max_val)
+                    except:
+                        pass
+
+                for idx, row in df.iterrows():
+                    rid = row["RespondentID"]
+
+                    if row[if_q] == if_val:
+                        # Must be within range (if defined)
+                        if pd.isna(row[then_q]):
+                            report.append({
+                                "RespondentID": rid,
+                                "Question": q,
+                                "Check_Type": "SkipRange",
+                                "Issue": "Missing but required"
+                            })
+                        elif valid_range and not (valid_range[0] <= row[then_q] <= valid_range[1]):
+                            report.append({
+                                "RespondentID": rid,
+                                "Question": q,
+                                "Check_Type": "SkipRange",
+                                "Issue": f"Out of range ({valid_range[0]}-{valid_range[1]})"
+                            })
+                    else:
+                        # Should be blank
+                        if pd.notna(row[then_q]):
+                            report.append({
+                                "RespondentID": rid,
+                                "Question": q,
+                                "Check_Type": "SkipRange",
+                                "Issue": "Answered but should be blank"
+                            })
+
+            except Exception as e:
+                report.append({
+                    "RespondentID": None,
+                    "Question": q,
+                    "Check_Type": "SkipRange",
+                    "Issue": f"Invalid SkipRange rule format ({e})"
+                })
+
         elif check_type == "Multi-Select":
             related_cols = [col for col in df.columns if col.startswith(q)]
             for col in related_cols:
-                invalid = df[~df[col].isin([0, 1])]
-                for rid in invalid["RespondentID"]:
-                    report.append({"RespondentID": rid, "Question": col, "Check_Type": "Multi-Select",
-                                   "Issue": "Invalid value (not 0/1)"})
+                offenders = df.loc[~df[col].isin([0, 1]), "RespondentID"]
+                for rid in offenders:
+                    report.append({"RespondentID": rid, "Question": col, "Check_Type": "Multi-Select", "Issue": "Invalid value (not 0/1)"})
             if len(related_cols) > 0:
-                zero_sum = df[df[related_cols].sum(axis=1) == 0]
-                for rid in zero_sum["RespondentID"]:
-                    report.append({"RespondentID": rid, "Question": q, "Check_Type": "Multi-Select",
-                                   "Issue": "Selected none of the options"})
+                offenders = df.loc[df[related_cols].sum(axis=1) == 0, "RespondentID"]
+                for rid in offenders:
+                    report.append({"RespondentID": rid, "Question": q, "Check_Type": "Multi-Select", "Issue": "No options selected"})
 
-        # 5. Straightliner
-        elif check_type == "Straightliner":
-            related_cols = [col for col in df.columns if col.startswith(q)]
-            if len(related_cols) > 1:
-                straightliners = df[df[related_cols].nunique(axis=1) == 1]
-                for rid in straightliners["RespondentID"]:
-                    report.append({"RespondentID": rid, "Question": q, "Check_Type": "Straightliner",
-                                   "Issue": "Straightliner pattern detected"})
-
-        # 6. Open-end Junk / AI-like
         elif check_type == "OpenEnd_Junk":
-            junk = df[df[q].astype(str).str.len() < 3]
-            for rid in junk["RespondentID"]:
-                report.append({"RespondentID": rid, "Question": q, "Check_Type": "OpenEnd_Junk",
-                               "Issue": "Too short / junk response"})
+            junk = df[q].astype(str).str.len() < 3
+            offenders = df.loc[junk, "RespondentID"]
+            for rid in offenders:
+                report.append({"RespondentID": rid, "Question": q, "Check_Type": "OpenEnd_Junk", "Issue": "Open-end looks like junk/low-effort"})
 
-            ai_like = df[df[q].astype(str).str.contains(r"(As an AI|ChatGPT|I am an AI|language model)", case=False, na=False)]
-            for rid in ai_like["RespondentID"]:
-                report.append({"RespondentID": rid, "Question": q, "Check_Type": "OpenEnd_AI",
-                               "Issue": "AI-generated looking response"})
-
-        # 7. Duplicate Respondent IDs
         elif check_type == "Duplicate":
-            duplicate_ids = df[df.duplicated(subset=[q])]["RespondentID"].tolist()
+            duplicate_ids = df[df.duplicated(subset=[q], keep=False)]["RespondentID"]
             for rid in duplicate_ids:
-                report.append({"RespondentID": rid, "Question": q, "Check_Type": "Duplicate",
-                               "Issue": "Duplicate ID"})
+                report.append({"RespondentID": rid, "Question": q, "Check_Type": "Duplicate", "Issue": "Duplicate value found"})
 
-    # --- Final Report ---
     report_df = pd.DataFrame(report)
 
-    st.write("### Validation Report")
-    if not report_df.empty:
-        st.dataframe(report_df)
-    else:
-        st.success("No validation issues found ✅")
+    st.write("### Validation Report (detailed by Respondent)")
+    st.dataframe(report_df)
 
-    # --- Download Validation Report ---
+    # --- ✅ Download Report ---
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         report_df.to_excel(writer, index=False, sheet_name="Validation Report")
+
     st.download_button(
         label="Download Validation Report",
         data=output.getvalue(),
