@@ -90,14 +90,6 @@ if data_file and rules_file:
                 report.append({"RespondentID": None, "Question": q, "Check_Type": "Skip", "Issue": "Invalid skip rule format"})
 
 
-            elif check_type == "consistency_check":
-                cond_var, cond_val = param.split('=')
-                cond_val = float(cond_val)
-                for v in variables:
-                    if row[cond_var] == cond_val and pd.isna(row[v]):
-                        row_errors.append(f"{v}: {message}")
-
-
         elif check_type == "Multi-Select":
             related_cols = [col for col in df.columns if col.startswith(q)]
             for col in related_cols:
