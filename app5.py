@@ -99,6 +99,7 @@ if data_file and rules_file:
                 try:
                     if "then" not in str(condition):
                         raise ValueError("Not a valid skip format")
+
                     if_part, then_part = condition.split("then", 1)
                     if_part, then_part = if_part.strip(), then_part.strip()
 
@@ -108,65 +109,60 @@ if data_file and rules_file:
                     else:
                         conds_text = if_part
 
-                    # Parse logical structure: support OR / AND (case-insensitive)
-                    # We'll split top-level on OR, then on AND for each group.
+                    # --- Build condition mask ---
                     or_groups = re.split(r'\s+or\s+', conds_text, flags=re.IGNORECASE)
-                    mask = pd.Series(False, index=df.index)   # <<--- FIX: start with False (was True before)
+                    mask = pd.Series(False, index=df.index)
                     for or_group in or_groups:
                         and_parts = re.split(r'\s+and\s+', or_group, flags=re.IGNORECASE)
                         sub_mask = pd.Series(True, index=df.index)
                         for part in and_parts:
-                            part = part.strip()
-                            # Normalize operators
-                            part = part.replace("<>", "!=")
-                            # support != and =
+                            part = part.strip().replace("<>", "!=")
                             if "!=" in part:
                                 col, val = [p.strip() for p in part.split("!=", 1)]
-                                # compare as string to be robust to types
                                 sub_mask &= df[col].astype(str).str.strip() != str(val)
                             elif "=" in part:
                                 col, val = [p.strip() for p in part.split("=", 1)]
                                 sub_mask &= df[col].astype(str).str.strip() == str(val)
                             else:
-                                raise ValueError(f"Unsupported condition operator in '{part}'")
-                        mask |= sub_mask   # OR together the groups
+                                raise ValueError(f"Unsupported operator in '{part}'")
+                        mask |= sub_mask   # OR together
 
-                    # Now parse the then_part: support "should be blank" or "should be answered"
+                    # --- Parse THEN part ---
                     then_q = then_part.split()[0].strip()
                     should_be_blank = "blank" in then_part.lower()
 
-                    # If then_q doesn't exist, report dataset-level issue
                     if then_q not in df.columns:
                         report.append({
-                            "RespondentID": None,
-                            "Question": q,
+                            "RespondentID": None, "Question": q,
                             "Check_Type": "Skip",
-                            "Issue": f"Skip condition references missing target variable '{then_q}'"
+                            "Issue": f"Skip condition references missing variable '{then_q}'"
                         })
                         continue
 
                     if should_be_blank:
-                        # offenders: condition true AND target is answered (not null / not empty)
-                        offenders = df.loc[mask & df[then_q].notna() & (df[then_q].astype(str).str.strip() != ""), "RespondentID"]
+                        offenders = df.loc[mask & df[then_q].notna() &
+                                           (df[then_q].astype(str).str.strip() != ""), "RespondentID"]
                         for rid in offenders:
                             report.append({"RespondentID": rid, "Question": q,
                                            "Check_Type": "Skip",
                                            "Issue": "Answered but should be blank"})
-                        # satisfied: condition true AND target is blank -> exclude these from range/missing
-                        satisfied = df.loc[mask & (df[then_q].isna() | (df[then_q].astype(str).str.strip() == "")), "RespondentID"].tolist()
+                        satisfied = df.loc[mask & (df[then_q].isna() |
+                                                   (df[then_q].astype(str).str.strip() == "")),
+                                           "RespondentID"].tolist()
                         skip_pass_ids = skip_pass_ids.union(set(satisfied))
                     else:
-                        # should be answered: condition true AND target blank => offender
-                        offenders = df.loc[mask & (df[then_q].isna() | (df[then_q].astype(str).str.strip() == "")), "RespondentID"]
+                        offenders = df.loc[mask & (df[then_q].isna() |
+                                                   (df[then_q].astype(str).str.strip() == "")),
+                                           "RespondentID"]
                         for rid in offenders:
                             report.append({"RespondentID": rid, "Question": q,
                                            "Check_Type": "Skip",
                                            "Issue": "Blank but should be answered"})
-
                 except Exception:
                     report.append({"RespondentID": None, "Question": q,
                                    "Check_Type": "Skip",
                                    "Issue": f"Invalid skip rule format ({condition})"})
+
 
             elif check_type == "Multi-Select":
                 related_cols = [col for col in df.columns if col.startswith(q)]
@@ -215,4 +211,5 @@ if data_file and rules_file:
         file_name="validation_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
