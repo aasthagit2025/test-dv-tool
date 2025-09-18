@@ -95,6 +95,7 @@ if data_file and rules_file:
                                    "Check_Type": "Range",
                                    "Issue": f"Invalid range condition ({condition})"})
 
+
             elif check_type == "Skip":
                 try:
                     if "then" not in str(condition):
@@ -103,7 +104,7 @@ if data_file and rules_file:
                     if_part, then_part = condition.split("then", 1)
                     if_part, then_part = if_part.strip(), then_part.strip()
 
-                    # remove leading 'If' (case-insensitive)
+                    # remove leading 'If'
                     if if_part.lower().startswith("if"):
                         conds_text = if_part[2:].strip()
                     else:
@@ -117,14 +118,27 @@ if data_file and rules_file:
                         sub_mask = pd.Series(True, index=df.index)
                         for part in and_parts:
                             part = part.strip().replace("<>", "!=")
-                            if "!=" in part:
-                                col, val = [p.strip() for p in part.split("!=", 1)]
-                                sub_mask &= df[col].astype(str).str.strip() != str(val)
-                            elif "=" in part:
-                                col, val = [p.strip() for p in part.split("=", 1)]
-                                sub_mask &= df[col].astype(str).str.strip() == str(val)
+
+                            if any(op in part for op in ["<=", ">=", "<", ">", "!=" , "="]):
+                                # figure out operator
+                                for op in ["<=", ">=", "!=", "<>", "<", ">", "="]:
+                                    if op in part:
+                                        col, val = [p.strip() for p in part.split(op, 1)]
+                                        if op in ["<=", ">=", "<", ">"]:
+                                            val = float(val)
+                                            col_vals = pd.to_numeric(df[col], errors="coerce")
+                                            if op == "<=": sub_mask &= col_vals <= val
+                                            elif op == ">=": sub_mask &= col_vals >= val
+                                            elif op == "<": sub_mask &= col_vals < val
+                                            elif op == ">": sub_mask &= col_vals > val
+                                        elif op in ["!=", "<>"]:
+                                            sub_mask &= df[col].astype(str).str.strip() != str(val)
+                                        elif op == "=":
+                                            sub_mask &= df[col].astype(str).str.strip() == str(val)
+                                        break
                             else:
                                 raise ValueError(f"Unsupported operator in '{part}'")
+
                         mask |= sub_mask   # OR together
 
                     # --- Parse THEN part ---
@@ -139,21 +153,20 @@ if data_file and rules_file:
                         })
                         continue
 
+                    # Define blank = NaN or empty string; NOT literal "NA"
+                    blank_mask = df[then_q].isna() | (df[then_q].astype(str).str.strip() == "")
+                    not_blank_mask = ~blank_mask & (~df[then_q].astype(str).str.upper().eq("NA"))
+
                     if should_be_blank:
-                        offenders = df.loc[mask & df[then_q].notna() &
-                                           (df[then_q].astype(str).str.strip() != ""), "RespondentID"]
+                        offenders = df.loc[mask & not_blank_mask, "RespondentID"]
                         for rid in offenders:
                             report.append({"RespondentID": rid, "Question": q,
                                            "Check_Type": "Skip",
                                            "Issue": "Answered but should be blank"})
-                        satisfied = df.loc[mask & (df[then_q].isna() |
-                                                   (df[then_q].astype(str).str.strip() == "")),
-                                           "RespondentID"].tolist()
+                        satisfied = df.loc[mask & blank_mask, "RespondentID"].tolist()
                         skip_pass_ids = skip_pass_ids.union(set(satisfied))
                     else:
-                        offenders = df.loc[mask & (df[then_q].isna() |
-                                                   (df[then_q].astype(str).str.strip() == "")),
-                                           "RespondentID"]
+                        offenders = df.loc[mask & blank_mask, "RespondentID"]
                         for rid in offenders:
                             report.append({"RespondentID": rid, "Question": q,
                                            "Check_Type": "Skip",
@@ -162,8 +175,7 @@ if data_file and rules_file:
                     report.append({"RespondentID": None, "Question": q,
                                    "Check_Type": "Skip",
                                    "Issue": f"Invalid skip rule format ({condition})"})
-
-
+                    
             elif check_type == "Multi-Select":
                 related_cols = [col for col in df.columns if col.startswith(q)]
                 for col in related_cols:
@@ -211,5 +223,6 @@ if data_file and rules_file:
         file_name="validation_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
 
