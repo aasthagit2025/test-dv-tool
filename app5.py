@@ -95,8 +95,8 @@ if data_file and rules_file:
                                    "Check_Type": "Range",
                                    "Issue": f"Invalid range condition ({condition})"})
 
-            elif check_type == "Skip":
-    try:
+    elif check_type == "Skip":
+      try:
         if "then" not in str(condition):
             raise ValueError("Not a valid skip format")
 
@@ -179,3 +179,4 @@ if data_file and rules_file:
         file_name="validation_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
