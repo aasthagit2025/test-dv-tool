@@ -148,10 +148,9 @@ if data_file and rules_file:
                         })
                         continue
 
-                    # Define blank = NaN or empty string; NOT literal "NA"
-                   blank_mask = df[then_q].isna() | (df[then_q].astype(str).str.strip() == "")
-                   not_blank_mask = ~blank_mask
-                    
+                    # Define blank = NaN or empty string ONLY (treat "NA" as valid answer)
+                    blank_mask = df[then_q].isna() | (df[then_q].astype(str).str.strip() == "")
+                    not_blank_mask = ~blank_mask
 
                     if should_be_blank:
                         offenders = df.loc[mask & not_blank_mask, "RespondentID"]
@@ -219,4 +218,3 @@ if data_file and rules_file:
         file_name="validation_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
