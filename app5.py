@@ -96,7 +96,7 @@ if data_file and rules_file:
                                    "Issue": f"Invalid range condition ({condition})"})
 
     elif check_type == "Skip":
-      try:
+     try:
         if "then" not in str(condition):
             raise ValueError("Not a valid skip format")
 
@@ -131,6 +131,7 @@ if data_file and rules_file:
         report.append({"RespondentID": None, "Question": q,
                        "Check_Type": "Skip",
                        "Issue": f"Invalid skip rule format ({condition})"})
+
 
             elif check_type == "Multi-Select":
                 related_cols = [col for col in df.columns if col.startswith(q)]
@@ -179,4 +180,5 @@ if data_file and rules_file:
         file_name="validation_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
