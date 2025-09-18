@@ -74,7 +74,6 @@ if data_file and rules_file:
                 if missing > 0:
                     offenders = df.loc[df[q].isna(), "RespondentID"]
                     for rid in offenders:
-                        # Only flag if not in skip_pass_ids
                         if rid not in skip_pass_ids:
                             report.append({"RespondentID": rid, "Question": q,
                                            "Check_Type": "Missing", "Issue": "Value is missing"})
@@ -95,43 +94,51 @@ if data_file and rules_file:
                                    "Check_Type": "Range",
                                    "Issue": f"Invalid range condition ({condition})"})
 
-    elif check_type == "Skip":
-     try:
-        if "then" not in str(condition):
-            raise ValueError("Not a valid skip format")
+            elif check_type == "Skip":
+                try:
+                    if "then" not in str(condition):
+                        raise ValueError("Not a valid skip format")
+                    if_part, then_part = condition.split("then")
+                    if_part, then_part = if_part.strip(), then_part.strip()
 
-        cond_part, then_part = condition.split("then")
-        cond_part = cond_part.replace("If", "").strip()
-        then_q, action = then_part.strip().split("should be")
-        then_q = then_q.strip()
-        action = action.strip().lower()  # "blank" or "answered"
+                    # --- handle multiple conditions (and/or, !=, <>) ---
+                    conds = if_part.replace("If", "").strip()
+                    conds = conds.replace("<>", "!=")
+                    mask = pd.Series(True, index=df.index)
+                    for sub in conds.split(" or "):
+                        sub_conds = sub.split(" and ")
+                        sub_mask = pd.Series(True, index=df.index)
+                        for sc in sub_conds:
+                            if "!=" in sc:
+                                col, val = sc.split("!=")
+                                sub_mask &= df[col.strip()] != int(val.strip())
+                            elif "=" in sc:
+                                col, val = sc.split("=")
+                                sub_mask &= df[col.strip()] == int(val.strip())
+                        mask |= sub_mask  # OR condition
 
-        # Convert logical operators
-        cond_expr = cond_part.replace("=", "==").replace("<>", "!=").replace(" not equal to ", "!=")
-        cond_expr = cond_expr.replace(" and ", " & ").replace(" or ", " | ")
+                    then_q = then_part.split()[0]
+                    should_be_blank = "blank" in then_part.lower()
 
-        # Evaluate condition dynamically
-        mask = df.eval(cond_expr)
+                    if should_be_blank:
+                        offenders = df.loc[mask & df[then_q].notna(), "RespondentID"]
+                        for rid in offenders:
+                            report.append({"RespondentID": rid, "Question": q,
+                                           "Check_Type": "Skip",
+                                           "Issue": "Answered but should be blank"})
+                        satisfied = df.loc[mask & df[then_q].isna(), "RespondentID"].tolist()
+                        skip_pass_ids = skip_pass_ids.union(set(satisfied))
+                    else:  # should be answered
+                        offenders = df.loc[mask & df[then_q].isna(), "RespondentID"]
+                        for rid in offenders:
+                            report.append({"RespondentID": rid, "Question": q,
+                                           "Check_Type": "Skip",
+                                           "Issue": "Blank but should be answered"})
 
-        subset = df[mask]
-
-        if action == "blank":
-            offenders = subset.loc[subset[then_q].notna(), "RespondentID"]
-            for rid in offenders:
-                report.append({"RespondentID": rid, "Question": q,
-                               "Check_Type": "Skip",
-                               "Issue": f"{then_q} answered but should be blank"})
-        elif action == "answered":
-            offenders = subset.loc[subset[then_q].isna(), "RespondentID"]
-            for rid in offenders:
-                report.append({"RespondentID": rid, "Question": q,
-                               "Check_Type": "Skip",
-                               "Issue": f"{then_q} missing but should be answered"})
-    except Exception:
-        report.append({"RespondentID": None, "Question": q,
-                       "Check_Type": "Skip",
-                       "Issue": f"Invalid skip rule format ({condition})"})
-
+                except Exception:
+                    report.append({"RespondentID": None, "Question": q,
+                                   "Check_Type": "Skip",
+                                   "Issue": f"Invalid skip rule format ({condition})"})
 
             elif check_type == "Multi-Select":
                 related_cols = [col for col in df.columns if col.startswith(q)]
@@ -180,5 +187,3 @@ if data_file and rules_file:
         file_name="validation_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-
