@@ -12,7 +12,7 @@ rules_file = st.file_uploader("Upload validation rules (Excel)", type=["xlsx"])
 if data_file and rules_file:
     # --- Load Data ---
     if data_file.name.endswith(".csv"):
-        df = pd.read_csv(data_file)
+        df = pd.read_csv(data_file, encoding_errors="ignore")
     elif data_file.name.endswith(".xlsx"):
         df = pd.read_excel(data_file)
     elif data_file.name.endswith(".sav"):
