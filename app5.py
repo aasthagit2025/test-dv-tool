@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import pyreadstat
 import io
+import re
 
 st.title("📊 Survey Data Validation Tool")
 
@@ -98,38 +99,65 @@ if data_file and rules_file:
                 try:
                     if "then" not in str(condition):
                         raise ValueError("Not a valid skip format")
-                    if_part, then_part = condition.split("then")
+                    if_part, then_part = condition.split("then", 1)
                     if_part, then_part = if_part.strip(), then_part.strip()
 
-                    # --- handle multiple conditions (and/or, !=, <>) ---
-                    conds = if_part.replace("If", "").strip()
-                    conds = conds.replace("<>", "!=")
-                    mask = pd.Series(True, index=df.index)
-                    for sub in conds.split(" or "):
-                        sub_conds = sub.split(" and ")
-                        sub_mask = pd.Series(True, index=df.index)
-                        for sc in sub_conds:
-                            if "!=" in sc:
-                                col, val = sc.split("!=")
-                                sub_mask &= df[col.strip()] != int(val.strip())
-                            elif "=" in sc:
-                                col, val = sc.split("=")
-                                sub_mask &= df[col.strip()] == int(val.strip())
-                        mask |= sub_mask  # OR condition
+                    # remove leading 'If' (case-insensitive)
+                    if if_part.lower().startswith("if"):
+                        conds_text = if_part[2:].strip()
+                    else:
+                        conds_text = if_part
 
-                    then_q = then_part.split()[0]
+                    # Parse logical structure: support OR / AND (case-insensitive)
+                    # We'll split top-level on OR, then on AND for each group.
+                    or_groups = re.split(r'\s+or\s+', conds_text, flags=re.IGNORECASE)
+                    mask = pd.Series(False, index=df.index)   # <<--- FIX: start with False (was True before)
+                    for or_group in or_groups:
+                        and_parts = re.split(r'\s+and\s+', or_group, flags=re.IGNORECASE)
+                        sub_mask = pd.Series(True, index=df.index)
+                        for part in and_parts:
+                            part = part.strip()
+                            # Normalize operators
+                            part = part.replace("<>", "!=")
+                            # support != and =
+                            if "!=" in part:
+                                col, val = [p.strip() for p in part.split("!=", 1)]
+                                # compare as string to be robust to types
+                                sub_mask &= df[col].astype(str).str.strip() != str(val)
+                            elif "=" in part:
+                                col, val = [p.strip() for p in part.split("=", 1)]
+                                sub_mask &= df[col].astype(str).str.strip() == str(val)
+                            else:
+                                raise ValueError(f"Unsupported condition operator in '{part}'")
+                        mask |= sub_mask   # OR together the groups
+
+                    # Now parse the then_part: support "should be blank" or "should be answered"
+                    then_q = then_part.split()[0].strip()
                     should_be_blank = "blank" in then_part.lower()
 
+                    # If then_q doesn't exist, report dataset-level issue
+                    if then_q not in df.columns:
+                        report.append({
+                            "RespondentID": None,
+                            "Question": q,
+                            "Check_Type": "Skip",
+                            "Issue": f"Skip condition references missing target variable '{then_q}'"
+                        })
+                        continue
+
                     if should_be_blank:
-                        offenders = df.loc[mask & df[then_q].notna(), "RespondentID"]
+                        # offenders: condition true AND target is answered (not null / not empty)
+                        offenders = df.loc[mask & df[then_q].notna() & (df[then_q].astype(str).str.strip() != ""), "RespondentID"]
                         for rid in offenders:
                             report.append({"RespondentID": rid, "Question": q,
                                            "Check_Type": "Skip",
                                            "Issue": "Answered but should be blank"})
-                        satisfied = df.loc[mask & df[then_q].isna(), "RespondentID"].tolist()
+                        # satisfied: condition true AND target is blank -> exclude these from range/missing
+                        satisfied = df.loc[mask & (df[then_q].isna() | (df[then_q].astype(str).str.strip() == "")), "RespondentID"].tolist()
                         skip_pass_ids = skip_pass_ids.union(set(satisfied))
-                    else:  # should be answered
-                        offenders = df.loc[mask & df[then_q].isna(), "RespondentID"]
+                    else:
+                        # should be answered: condition true AND target blank => offender
+                        offenders = df.loc[mask & (df[then_q].isna() | (df[then_q].astype(str).str.strip() == "")), "RespondentID"]
                         for rid in offenders:
                             report.append({"RespondentID": rid, "Question": q,
                                            "Check_Type": "Skip",
@@ -149,7 +177,7 @@ if data_file and rules_file:
                                        "Check_Type": "Multi-Select",
                                        "Issue": "Invalid value (not 0/1)"})
                 if len(related_cols) > 0:
-                    offenders = df.loc[df[related_cols].sum(axis=1) == 0, "RespondentID"]
+                    offenders = df.loc[df[related_cols].fillna(0).sum(axis=1) == 0, "RespondentID"]
                     for rid in offenders:
                         report.append({"RespondentID": rid, "Question": q,
                                        "Check_Type": "Multi-Select",
@@ -187,3 +215,4 @@ if data_file and rules_file:
         file_name="validation_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
