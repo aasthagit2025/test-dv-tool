@@ -60,7 +60,7 @@ if data_file and rules_file:
                     })
                 continue
 
-            # --- Single-Column Checks (skip for Multi-Select) ---
+            # --- Single-Column Checks ---
             if check_type != "Multi-Select" and q not in df.columns:
                 report.append({
                     "RespondentID": None,
@@ -137,35 +137,36 @@ if data_file and rules_file:
                         mask |= sub_mask   # OR together
 
                     # --- Parse THEN part ---
-                    then_q = then_part.split()[0].strip()
+                    then_qs = [q.strip() for q in then_part.split()[0].split(",")]  # allow multiple
                     should_be_blank = "blank" in then_part.lower()
 
-                    if then_q not in df.columns:
-                        report.append({
-                            "RespondentID": None, "Question": q,
-                            "Check_Type": "Skip",
-                            "Issue": f"Skip condition references missing variable '{then_q}'"
-                        })
-                        continue
+                    for then_q in then_qs:
+                        if then_q not in df.columns:
+                            report.append({
+                                "RespondentID": None, "Question": q,
+                                "Check_Type": "Skip",
+                                "Issue": f"Skip condition references missing variable '{then_q}'"
+                            })
+                            continue
 
-                    # Define blank = NaN or empty string ONLY (treat "NA" as valid answer)
-                    blank_mask = df[then_q].isna() | (df[then_q].astype(str).str.strip() == "")
-                    not_blank_mask = ~blank_mask
+                        # Define blank = NaN or empty string ONLY (treat "NA" as valid answer)
+                        blank_mask = df[then_q].isna() | (df[then_q].astype(str).str.strip() == "")
+                        not_blank_mask = ~blank_mask
 
-                    if should_be_blank:
-                        offenders = df.loc[mask & not_blank_mask, "RespondentID"]
-                        for rid in offenders:
-                            report.append({"RespondentID": rid, "Question": q,
-                                           "Check_Type": "Skip",
-                                           "Issue": "Answered but should be blank"})
-                        satisfied = df.loc[mask & blank_mask, "RespondentID"].tolist()
-                        skip_pass_ids = skip_pass_ids.union(set(satisfied))
-                    else:
-                        offenders = df.loc[mask & blank_mask, "RespondentID"]
-                        for rid in offenders:
-                            report.append({"RespondentID": rid, "Question": q,
-                                           "Check_Type": "Skip",
-                                           "Issue": "Blank but should be answered"})
+                        if should_be_blank:
+                            offenders = df.loc[mask & not_blank_mask, "RespondentID"]
+                            for rid in offenders:
+                                report.append({"RespondentID": rid, "Question": q,
+                                               "Check_Type": "Skip",
+                                               "Issue": f"{then_q} answered but should be blank"})
+                            satisfied = df.loc[mask & blank_mask, "RespondentID"].tolist()
+                            skip_pass_ids = skip_pass_ids.union(set(satisfied))
+                        else:
+                            offenders = df.loc[mask & blank_mask, "RespondentID"]
+                            for rid in offenders:
+                                report.append({"RespondentID": rid, "Question": q,
+                                               "Check_Type": "Skip",
+                                               "Issue": f"{then_q} blank but should be answered"})
                 except Exception:
                     report.append({"RespondentID": None, "Question": q,
                                    "Check_Type": "Skip",
@@ -173,27 +174,24 @@ if data_file and rules_file:
 
             elif check_type == "Multi-Select":
                 related_cols = [col for col in df.columns if col.startswith(q)]
-                if not related_cols:
+                if len(related_cols) == 0:
                     report.append({
-                        "RespondentID": None,
-                        "Question": q,
+                        "RespondentID": None, "Question": q,
                         "Check_Type": "Multi-Select",
-                        "Issue": f"No dataset columns found starting with '{q}'"
+                        "Issue": "No matching columns found in dataset"
                     })
-                    continue
-
                 for col in related_cols:
                     offenders = df.loc[~df[col].isin([0, 1]), "RespondentID"]
                     for rid in offenders:
                         report.append({"RespondentID": rid, "Question": col,
                                        "Check_Type": "Multi-Select",
                                        "Issue": "Invalid value (not 0/1)"})
-                # At least one option selected
-                offenders = df.loc[df[related_cols].fillna(0).sum(axis=1) == 0, "RespondentID"]
-                for rid in offenders:
-                    report.append({"RespondentID": rid, "Question": q,
-                                   "Check_Type": "Multi-Select",
-                                   "Issue": "No options selected"})
+                if len(related_cols) > 0:
+                    offenders = df.loc[df[related_cols].fillna(0).sum(axis=1) == 0, "RespondentID"]
+                    for rid in offenders:
+                        report.append({"RespondentID": rid, "Question": q,
+                                       "Check_Type": "Multi-Select",
+                                       "Issue": "No options selected"})
 
             elif check_type == "OpenEnd_Junk":
                 junk = df[q].astype(str).str.len() < 3
