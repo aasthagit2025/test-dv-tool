@@ -60,15 +60,15 @@ if data_file and rules_file:
                     })
                 continue
                 
-  # --- Single-Column Checks ---
+         # --- Single-Column Checks ---
          if check_type != "Multi-Select" and q not in df.columns:
-              report.append({
-                           "RespondentID": None,
-                            "Question": q,
-                             "Check_Type": check_type,
-                             "Issue": "Question not found in dataset"
-       })
-    continue
+                    report.append({
+                        "RespondentID": None,
+                        "Question": q,
+                        "Check_Type": "check_type",
+                        "Issue": "Question(s) not found in dataset"
+                    })
+                continue
 
 
             if check_type == "Missing":
@@ -219,5 +219,6 @@ if data_file and rules_file:
         file_name="validation_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
 
