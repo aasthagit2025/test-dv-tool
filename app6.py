@@ -59,17 +59,16 @@ if data_file and rules_file:
                         "Issue": "Question(s) not found in dataset"
                     })
                 continue
-                
-         # --- Single-Column Checks ---
-         if check_type != "Multi-Select" and q not in df.columns:
-                    report.append({
-                        "RespondentID": None,
-                        "Question": q,
-                        "Check_Type": "check_type",
-                        "Issue": "Question(s) not found in dataset"
-                    })
-                continue
 
+            # --- Single-Column Checks (skip for Multi-Select) ---
+            if check_type != "Multi-Select" and q not in df.columns:
+                report.append({
+                    "RespondentID": None,
+                    "Question": q,
+                    "Check_Type": check_type,
+                    "Issue": "Question not found in dataset"
+                })
+                continue
 
             if check_type == "Missing":
                 missing = df[q].isna().sum()
@@ -174,18 +173,27 @@ if data_file and rules_file:
 
             elif check_type == "Multi-Select":
                 related_cols = [col for col in df.columns if col.startswith(q)]
+                if not related_cols:
+                    report.append({
+                        "RespondentID": None,
+                        "Question": q,
+                        "Check_Type": "Multi-Select",
+                        "Issue": f"No dataset columns found starting with '{q}'"
+                    })
+                    continue
+
                 for col in related_cols:
                     offenders = df.loc[~df[col].isin([0, 1]), "RespondentID"]
                     for rid in offenders:
                         report.append({"RespondentID": rid, "Question": col,
                                        "Check_Type": "Multi-Select",
                                        "Issue": "Invalid value (not 0/1)"})
-                if len(related_cols) > 0:
-                    offenders = df.loc[df[related_cols].fillna(0).sum(axis=1) == 0, "RespondentID"]
-                    for rid in offenders:
-                        report.append({"RespondentID": rid, "Question": q,
-                                       "Check_Type": "Multi-Select",
-                                       "Issue": "No options selected"})
+                # At least one option selected
+                offenders = df.loc[df[related_cols].fillna(0).sum(axis=1) == 0, "RespondentID"]
+                for rid in offenders:
+                    report.append({"RespondentID": rid, "Question": q,
+                                   "Check_Type": "Multi-Select",
+                                   "Issue": "No options selected"})
 
             elif check_type == "OpenEnd_Junk":
                 junk = df[q].astype(str).str.len() < 3
@@ -219,6 +227,3 @@ if data_file and rules_file:
         file_name="validation_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-
-
