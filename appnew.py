@@ -1,46 +1,144 @@
-import streamlit as st
 import pandas as pd
-import pyreadstat
-import io
-import re
 
-st.title("📊 Survey Data Validation Tool")
+# ---------------------------
+# Helper functions
+# ---------------------------
 
-# --- File Upload ---
-data_file = st.file_uploader("Upload your survey data file (CSV, Excel, or SPSS)", type=["csv", "xlsx", "sav"])
-rules_file = st.file_uploader("Upload validation rules (Excel)", type=["xlsx"])
+def expand_prefix(prefix, df_cols):
+    """
+    Expands a prefix like 'Q1_' into all matching dataframe columns
+    Example: expand_prefix("Q1_", df.columns) -> ['Q1_1', 'Q1_2', ...]
+    """
+    return [c for c in df_cols if c.startswith(prefix)]
 
-if data_file and rules_file:
-    # --- Load Data ---
-    if data_file.name.endswith(".csv"):
-        df = pd.read_csv(data_file, encoding_errors="ignore")
-    elif data_file.name.endswith(".xlsx"):
-        df = pd.read_excel(data_file)
-    elif data_file.name.endswith(".sav"):
-        df, meta = pyreadstat.read_sav(data_file)
-    else:
-        st.error("Unsupported file type")
-        st.stop()
 
-    # --- Load Rules ---
-    rules_df = pd.read_excel(rules_file)
+def check_range(series, condition):
+    """Validate if all values are within given numeric range, e.g. '1-5'"""
+    try:
+        low, high = map(int, condition.split("-"))
+        invalid = series[~series.isna() & ~series.between(low, high)]
+        return invalid.index.tolist()
+    except Exception as e:
+        return [f"Error parsing range '{condition}': {e}"]
 
-    # --- Validation Report Logic ---
-    report = []
-    skip_pass_ids = set()
 
-    # Utility: expand column ranges like "Q3_1 to Q3_13"
-    def expand_range(expr, df_cols):
-        expr = expr.strip()
-        if "to" in expr:
-            start, end = [x.strip() for x in expr.split("to")]
-            base = re.match(r"([A-Za-z0-9_]+?)(\d+)$", start)
-            base2 = re.match(r"([A-Za-z0-9_]+?)(\d+)$", end)
-            if base and base2 and base.group(1) == base2.group(1):
-                prefix = base.group(1)
-                start_num, end_num = int(base.group(2)), int(base2.group(2))
-                return [f"{prefix}{i}" for i in range(start_num, end_num + 1) if f"{prefix}{i}" in df_cols]
-        return [expr] if expr in df_cols else []
+def check_skip(df, condition):
+    """
+    Validate skip logic of type:
+    if VAR=VALUE then TARGET should be answered
+    """
+    try:
+        cond = condition.lower().replace("then", "").replace("should be answered", "").strip()
+        # Example: "if Segment_7=1 ITQ1_r1"
+        if cond.startswith("if "):
+            cond = cond[3:]
 
-    # Utility: get all dataset columns starting with prefix
-    def expand_prefix(prefix, df_cols):
+        parts = cond.split()
+        if len(parts) < 2:
+            return [f"Invalid skip condition: {condition}"]
+
+        lhs, target = parts[0], parts[1]
+        var, val = lhs.split("=")
+        var, val = var.strip(), val.strip()
+
+        # rows where var == val but target is missing
+        invalid = df[(df[var].astype(str) == val) & (df[target].isna())]
+        return invalid.index.tolist()
+    except Exception as e:
+        return [f"Error parsing skip '{condition}': {e}"]
+
+
+def check_missing(series, _condition=None):
+    """Check for missing values"""
+    return series[series.isna()].index.tolist()
+
+
+# ---------------------------
+# Main validation engine
+# ---------------------------
+
+def run_validations(df, rules_df):
+    all_errors = []
+
+    for _, rule in rules_df.iterrows():
+        q = str(rule["Question"]).strip()
+        check_types = [c.strip() for c in str(rule["Check_Type"]).split(";")]
+        conditions = [c.strip() for c in str(rule.get("Condition", "")).split(";")]
+
+        # pad conditions if fewer than check_types
+        if len(conditions) < len(check_types):
+            conditions += [conditions[-1]] * (len(check_types) - len(conditions))
+
+        for i, check_type in enumerate(check_types):
+            condition = conditions[i] if i < len(conditions) else None
+
+            # handle Range check
+            if check_type == "Range":
+                if q in df.columns:
+                    errors = check_range(df[q], condition)
+                    if errors:
+                        all_errors.append((q, "Range", errors))
+                else:
+                    matches = expand_prefix(q, df.columns)
+                    for col in matches:
+                        errors = check_range(df[col], condition)
+                        if errors:
+                            all_errors.append((col, "Range", errors))
+
+            # handle Skip check
+            elif check_type == "Skip":
+                errors = check_skip(df, condition)
+                if errors:
+                    all_errors.append((q, "Skip", errors))
+
+            # handle Missing check
+            elif check_type == "Missing":
+                if q in df.columns:
+                    errors = check_missing(df[q])
+                    if errors:
+                        all_errors.append((q, "Missing", errors))
+                else:
+                    matches = expand_prefix(q, df.columns)
+                    for col in matches:
+                        errors = check_missing(df[col])
+                        if errors:
+                            all_errors.append((col, "Missing", errors))
+
+            # Unknown check
+            else:
+                all_errors.append((q, check_type, [f"Unknown check type {check_type}"]))
+
+    return all_errors
+
+
+# ---------------------------
+# Example usage
+# ---------------------------
+
+if __name__ == "__main__":
+    # Example survey dataframe
+    df = pd.DataFrame({
+        "RespondentID": [1, 2, 3, 4],
+        "Segment_7": [1, 0, 1, 1],
+        "ITQ1_r1": [1, 6, None, 3],
+        "ITQ2_r1": [2, 3, 99, None],
+        "ITQ5_r1": [1, 2, None, 1],
+        "ITQ5x1": [5, None, None, None],
+        "ITQ10x1_r1": [4, None, 2, 5],
+        "ITQ11": [None, None, None, 1],
+    })
+
+    # Example rules dataframe (simulate reading from Excel)
+    rules_df = pd.DataFrame([
+        {"Question": "ITQ1_r1", "Check_Type": "Range;Skip", "Condition": "1-5;if Segment_7=1 then ITQ1_r1 should be answered"},
+        {"Question": "ITQ2_r1", "Check_Type": "Range;Skip", "Condition": "1-5;if Segment_7=1 then ITQ2_r1 should be answered"},
+        {"Question": "ITQ5_r1", "Check_Type": "Range;Skip", "Condition": "1-2;if Segment_7=1 then ITQ5_r1 should be answered"},
+        {"Question": "ITQ5x1", "Check_Type": "Skip", "Condition": "if ITQ5_r1=1 then ITQ5x1 should be answered"},
+        {"Question": "ITQ10x1_r1", "Check_Type": "Range;Skip", "Condition": "1-5;if Segment_7=1 then ITQ10x1_r1 should be answered"},
+        {"Question": "ITQ11", "Check_Type": "Skip", "Condition": "if ITQ10x1_r1>=3 then ITQ11 should be answered"},
+    ])
+
+    errors = run_validations(df, rules_df)
+
+    for e in errors:
+        print(e)
